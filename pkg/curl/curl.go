@@ -3,37 +3,55 @@ package curl
 import (
 	"encoding/json"
 	"net/http"
-	"os/exec"
+	"net/url"
+	"time"
 )
 
-type CurlRequest struct {
-	Command string `json:"command"`
+type Request struct {
+	URL     string  `json:"url"`
+	Proxy   string  `json:"proxy,omitempty"`
+	Timeout float64 `json:"timeout,omitempty"`
 }
 
-type CurlResponse struct {
-	Output  string `json:"content"`
-	Error   string `json:"error,omitempty"`
-	Success bool   `json:"success"`
+type Response struct {
+	Reachable  bool   `json:"reachable"`
+	StatusCode int    `json:"statusCode,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 func HandleCurl(w http.ResponseWriter, r *http.Request) {
-    var req CurlRequest
-    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-        http.Error(w, "Invalid request body", http.StatusBadRequest)
-        return
-    }
+	var req Request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendResponse(w, Response{Error: "Invalid request body"})
+		return
+	}
 
-    cmd := exec.Command("sh", "-c", req.Command)
-    output, err := cmd.CombinedOutput()
+	client := &http.Client{Timeout: 30 * time.Second}
 
-    response := CurlResponse{
-        Output:  string(output),
-        Success: err == nil,
-    }
-    if err != nil {
-        response.Error = err.Error()
-    }
+	if req.Timeout > 0 {
+		client.Timeout = time.Duration(req.Timeout * float64(time.Second))
+	}
 
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(response)
+	if req.Proxy != "" {
+		proxyURL, err := url.Parse(req.Proxy)
+		if err != nil {
+			sendResponse(w, Response{Error: "Invalid proxy URL"})
+			return
+		}
+		client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	}
+
+	resp, err := client.Get(req.URL)
+	if err != nil {
+		sendResponse(w, Response{Error: err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	sendResponse(w, Response{Reachable: true, StatusCode: resp.StatusCode})
+}
+
+func sendResponse(w http.ResponseWriter, resp Response) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
